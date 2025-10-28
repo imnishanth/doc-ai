@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat With Your Document!</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, .1);
+            border-left-color: #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .chat-bubble {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .chat-bubble.user {
+            background-color: #4f46e5;
+            color: white;
+            border-bottom-right-radius: 4px;
+            align-self: flex-end;
+        }
+        .chat-bubble.bot {
+            background-color: #f3f4f6;
+            color: #1f2937;
+            border-bottom-left-radius: 4px;
+            align-self: flex-start;
+        }
+        
+        /* Typing indicator */
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+        }
+        .typing-indicator span {
+            height: 8px;
+            width: 8px;
+            background-color: #9ca3af;
+            border-radius: 50%;
+            display: inline-block;
+            margin: 0 2px;
+            animation: bounce 1.4s infinite both;
+        }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1.0); }
+        }
+
+        #chat-history::-webkit-scrollbar {
+            width: 6px;
+        }
+        #chat-history::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 10px;
+        }
+        #chat-history::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        #chat-history::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans antialiased">
+
+    <div class="container mx-auto max-w-3xl p-4 md:p-6 mt-6 mb-6">
+
+        <div id="setup-container" class="bg-white p-6 md:p-8 rounded-lg shadow-xl">
+            <header class="mb-6">
+                <h1 class="text-3xl font-bold text-gray-900">Document AI Chat</h1>
+                <p class="text-gray-600">Upload a document to start a conversation with it.</p>
+            </header>
+
+            <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md mb-6" role="alert">
+                <p class="font-bold">Important</p>
+                <p>Your API key is used directly from the browser. Do not share this file or use it on a public website with your key embedded.</p>
+            </div>
+
+            <div class="space-y-6">
+                <div>
+                    <label for="apiKey" class="block text-sm font-medium text-gray-700 mb-1">
+                        Cohere API Key
+                    </label>
+                    <input type="password" id="apiKey" name="apiKey" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500" placeholder="Enter your Cohere API key">
+                </div>
+
+                <div>
+                    <label for="fileUpload" class="block text-sm font-medium text-gray-700 mb-1">
+                        Upload Document (.txt, .pdf)
+                    </label>
+                    <input type="file" id="fileUpload" name="fileUpload" accept=".txt,.pdf" class="w-full text-sm text-gray-500
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-md file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-indigo-50 file:text-indigo-700
+                        hover:file:bg-indigo-100
+                    ">
+                </div>
+                
+                <div id="setup-error" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-md" role="alert">
+                    <strong class="font-bold">Error:</strong>
+                    <span id="setup-errorMessage" class="block sm:inline"></span>
+                </div>
+
+                <button id="loadDocBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-md shadow-md transition duration-150 ease-in-out flex items-center justify-center">
+                    <span id="loadDocText">Load Document & Start Chat</span>
+                    <div id="loadDocSpinner" class="hidden spinner"></div>
+                </button>
+            </div>
+        </div>
+
+        <div id="chat-container" class="hidden bg-white rounded-lg shadow-xl flex flex-col" style="height: 85vh;">
+            
+            <header class="flex items-center justify-between p-4 border-b border-gray-200">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">Chatting with:</h2>
+                    <p id="doc-filename" class="text-sm text-gray-600 truncate" title="Document Name">document.pdf</p>
+                </div>
+                <button id="reset-btn" class="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">
+                    <i class="ph ph-arrow-counter-clockwise text-base"></i>
+                    Load New
+                </button>
+            </header>
+
+            <div id="chat-history" class="flex-1 p-4 space-y-4 overflow-y-auto flex flex-col">
+            </div>
+
+            <div id="typing-indicator" class="hidden p-4">
+                <div class="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+
+            <div id="prompt-buttons" class="p-2 border-t border-gray-200 flex flex-wrap gap-2">
+                <button class="prompt-btn text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-full">Summarize this document</button>
+                <button class="prompt-btn text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-full">What are the 3 key takeaways?</button>
+                <button class="prompt-btn text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-full">Analyze the sentiment</button>
+            </div>
+
+            <div class="p-4 border-t border-gray-200 flex items-center gap-3">
+                <input type="text" id="chat-input" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500" placeholder="Ask a question about the document...">
+                <button id="send-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 rounded-lg shadow-md transition duration-150">
+                    <i class="ph ph-paper-plane-right text-xl"></i>
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        let currentApiKey = '';
+        let currentDocText = '';
+        let currentFilename = '';
+        let currentChatHistory = [];
+        const COHERE_API_URL = 'https://api.cohere.ai/v1/chat';
+
+        const setupContainer = document.getElementById('setup-container');
+        const chatContainer = document.getElementById('chat-container');
+        
+        const apiKeyInput = document.getElementById('apiKey');
+        const fileUpload = document.getElementById('fileUpload');
+        const loadDocBtn = document.getElementById('loadDocBtn');
+        const loadDocText = document.getElementById('loadDocText');
+        const loadDocSpinner = document.getElementById('loadDocSpinner');
+        const setupError = document.getElementById('setup-error');
+        const setupErrorMessage = document.getElementById('setup-errorMessage');
+
+        const docFilename = document.getElementById('doc-filename');
+        const resetBtn = document.getElementById('reset-btn');
+        const chatHistory = document.getElementById('chat-history');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const promptButtons = document.getElementById('prompt-buttons');
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+
+
+        loadDocBtn.addEventListener('click', handleLoadDocument);
+        sendBtn.addEventListener('click', handleSendMessage);
+        resetBtn.addEventListener('click', resetApp);
+        
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault(); // Prevent newline on Enter
+                handleSendMessage();
+            }
+        });
+
+        promptButtons.addEventListener('click', (e) => {
+            if (e.target.classList.contains('prompt-btn')) {
+                const promptText = e.target.textContent;
+                chatInput.value = promptText;
+                handleSendMessage();
+            }
+        });
+
+        async function handleLoadDocument() {
+            const apiKey = apiKeyInput.value.trim();
+            const file = fileUpload.files[0];
+
+            if (!apiKey) {
+                displaySetupError('Please enter your Cohere API key.');
+                return;
+            }
+            if (!file) {
+                displaySetupError('Please upload a .txt or .pdf file.');
+                return;
+            }    
+
+            hideSetupError();
+            loadDocText.classList.add('hidden');
+            loadDocSpinner.classList.remove('hidden');
+            loadDocBtn.disabled = true;
+
+            try {
+                const documentText = await extractText(file);
+                
+                currentApiKey = apiKey;
+                currentDocText = documentText;
+                currentFilename = file.name;
+
+                initializeChat();
+
+            } catch (err) {
+                displaySetupError(err.message);
+            } finally {
+                loadDocText.classList.remove('hidden');
+                loadDocSpinner.classList.add('hidden');
+                loadDocBtn.disabled = false;
+            }
+        }
+
+        function initializeChat() {
+            currentChatHistory = [];
+            chatHistory.innerHTML = '';
+            
+            const systemPrompt = `You are an expert AI assistant. A user has uploaded a document with the filename "${currentFilename}". Your task is to answer questions and follow instructions based *only* on the contents of this document. Do not use any external knowledge. If the answer is not in the document, state that clearly.
+            
+--- DOCUMENT START ---
+${currentDocText}
+--- DOCUMENT END ---
+`;
+
+            currentChatHistory.push({ role: "SYSTEM", message: systemPrompt });
+
+            docFilename.textContent = currentFilename;
+            docFilename.title = currentFilename;
+            setupContainer.classList.add('hidden');
+            chatContainer.classList.remove('hidden');
+            chatContainer.classList.add('flex');
+
+            addMessageToUI('bot', `Document "${currentFilename}" loaded. How can I help you?`);
+        }
+
+        async function handleSendMessage() {
+            const userMessage = chatInput.value.trim();
+            if (!userMessage) return;
+
+            addMessageToUI('user', userMessage);
+            chatInput.value = '';
+
+            const messageToSend = userMessage;
+            const historyForAPI = [...currentChatHistory];
+            
+            currentChatHistory.push({ role: "USER", message: messageToSend });
+
+            typingIndicator.classList.remove('hidden');
+
+            try {
+                const botMessage = await getCohereResponse(historyForAPI, messageToSend);
+
+                currentChatHistory.push({ role: "CHATBOT", message: botMessage });
+                addMessageToUI('bot', botMessage);
+
+            } catch (err) {
+                addMessageToUI('bot', `Sorry, an error occurred: ${err.message}`);
+            } finally {
+                typingIndicator.classList.add('hidden');
+            }
+        }
+
+
+        async function getCohereResponse(history, message) {
+            const payload = {
+                model: 'command-r', 
+                chat_history: history,
+                message: message,
+            };
+
+            const response = await fetch(COHERE_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentApiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`Cohere API error (${response.status}): ${errorData.message || 'Unknown error'}`);
+            }
+
+            const data = await response.json();
+            
+            if (data.text) {
+                return data.text;
+            } else {
+                throw new Error('Invalid response structure from Cohere API.');
+            }
+        }
+
+        function resetApp() {
+            currentApiKey = '';
+            currentDocText = '';
+            currentFilename = '';
+            currentChatHistory = [];
+
+            chatContainer.classList.add('hidden');
+            chatContainer.classList.remove('flex');
+            setupContainer.classList.remove('hidden');
+            
+            apiKeyInput.value = '';
+            fileUpload.value = '';
+            chatHistory.innerHTML = '';
+            hideSetupError();
+        }
+
+        function extractText(file) {
+            return new Promise((resolve, reject) => {
+                if (file.type === 'text/plain') {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.onerror = (e) => reject(new Error('Failed to read text file.'));
+                    reader.readAsText(file);
+                } else if (file.type === 'application/pdf') {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        try {
+                            const pdf = await pdfjsLib.getDocument({ data: e.target.result }).promise;
+                            let allText = '';
+                            for (let i = 1; i <= pdf.numPages; i++) {
+                                const page = await pdf.getPage(i);
+                                const textContent = await page.getTextContent();
+                                const pageText = textContent.items.map(item => item.str).join(' ');
+                                allText += pageText + '\n\n'; // Add newline between pages
+                            }
+                            resolve(allText);
+                        } catch (pdfError) {
+                            reject(new Error(`Failed to parse PDF: ${pdfError.message}`));
+                        }
+                    };
+                    reader.onerror = (e) => reject(new Error('Failed to read PDF file.'));
+                    reader.readAsArrayBuffer(file);
+                } else {
+                    reject(new Error('Unsupported file type. Please upload .txt or .pdf.'));
+                }
+            });
+        }
+
+        function addMessageToUI(sender, message) {
+            const bubbleWrapper = document.createElement('div');
+            bubbleWrapper.classList.add('w-full', 'flex', 'flex-col');
+            
+            const bubble = document.createElement('div');
+            bubble.classList.add('chat-bubble', sender);
+            bubble.textContent = message;
+
+            if (sender === 'bot') {
+                const copyButton = document.createElement('button');
+                copyButton.innerHTML = '<i class="ph ph-copy text-sm"></i>';
+                copyButton.classList.add('text-gray-500', 'hover:text-gray-800', 'mt-2', 'ml-1', 'opacity-70', 'hover:opacity-100');
+                copyButton.title = 'Copy text';
+                
+                copyButton.onclick = () => {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = message;
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        copyButton.innerHTML = '<i class="ph ph-check text-sm text-green-600"></i>';
+                        setTimeout(() => {
+                            copyButton.innerHTML = '<i class="ph ph-copy text-sm"></i>';
+                        }, 2000);
+                    } catch (err) {
+                        console.error('Failed to copy text: ', err);
+                    }
+                    document.body.removeChild(textarea);
+                };
+                
+                bubbleWrapper.appendChild(bubble);
+                bubbleWrapper.appendChild(copyButton);
+            } else {
+                bubbleWrapper.appendChild(bubble);
+            }
+
+            chatHistory.appendChild(bubbleWrapper);
+
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        function displaySetupError(message) {
+            setupErrorMessage.textContent = message;
+            setupError.classList.remove('hidden');
+        }
+
+        function hideSetupError() {
+            setupError.classList.add('hidden');
+        }
+
+    </script>
+</body>
+</html>
